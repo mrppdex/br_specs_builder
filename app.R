@@ -97,14 +97,14 @@ ui <- fluidPage(
       helpText("Create specs below or upload a CSV file."),
       
       wellPanel(
-        textInput("spec_col_name", "Column Name"),
-        selectInput("spec_col_type", "Data Type", 
-                    choices = c("Text", "Numeric", "Categorical", "File Path")),
-        conditionalPanel(
-          condition = "input.spec_col_type == 'Categorical'",
-          textAreaInput("spec_col_values", "Allowed Values (comma-separated)")
-        ),
-        actionButton("add_spec", "Add Spec Rule", icon = icon("plus"))
+          textInput("spec_col_name", "Column Name"),
+          selectInput("spec_col_type", "Data Type", 
+                      choices = c("Text", "Numeric", "Categorical", "File Path")),
+          conditionalPanel(
+              condition = "input.spec_col_type == 'Categorical'",
+              textAreaInput("spec_col_values", "Allowed Values (comma-separated)")
+          ),
+          actionButton("add_spec", "Add Spec Rule", icon = icon("plus"))
       ),
       
       h5("Manage Spec Files"),
@@ -124,7 +124,7 @@ ui <- fluidPage(
         "2. Upload the Excel file you want to validate.",
         "3. Select the sheets to validate from the list.",
         "4. Click 'Validate' to see results.",
-        "5. View results in the 'Sheet Details' tab or see all issues in 'Error Summary'.",
+        "5. View results for each sheet in its own tab. View all issues in 'Error Summary'.",
         "6. Hover over a red cell for an error message.",
         "7. Double-click to edit and correct data. The table will re-validate automatically.",
         "8. Use the 'Export' button on each tab to save the corrected data."
@@ -136,19 +136,9 @@ ui <- fluidPage(
       h4("Specification Rules"),
       withSpinner(DTOutput("spec_table")),
       hr(),
-      tabsetPanel(
-        id = "results_tabs",
-        tabPanel("Sheet Details", 
-                 h4("Validation Results per Sheet"),
-                 uiOutput("validation_tabs")
-        ),
-        tabPanel("Error Summary",
-                 h4("Consolidated List of Validation Errors"),
-                 withSpinner(DTOutput("error_summary_table")),
-                 br(),
-                 uiOutput("download_errors_ui")
-        )
-      )
+      # FIX: The main content area is now a dynamic UI output
+      # This prevents browser rendering bugs from nested tabsets
+      uiOutput("main_tabs_ui")
     )
   )
 )
@@ -171,10 +161,10 @@ server <- function(input, output, session) {
     req(input$spec_col_name, input$spec_col_type)
     
     if(input$spec_col_name %in% rv$specs$Name){
-      showNotification("A rule for this column name already exists.", type = "warning")
-      return()
+        showNotification("A rule for this column name already exists.", type = "warning")
+        return()
     }
-    
+
     new_rule <- tibble(
       Name = input$spec_col_name,
       Type = input$spec_col_type,
@@ -190,15 +180,15 @@ server <- function(input, output, session) {
     req(input$upload_specs)
     df <- try(read.csv(input$upload_specs$datapath, stringsAsFactors = FALSE, check.names = FALSE))
     if(inherits(df, "try-error")){
-      showNotification("Failed to read the spec file. Please ensure it's a valid CSV.", type = "error")
-      return()
+        showNotification("Failed to read the spec file. Please ensure it's a valid CSV.", type = "error")
+        return()
     }
     if(!all(c("Name", "Type", "Values") %in% colnames(df))){
-      showNotification("Spec file must contain 'Name', 'Type', and 'Values' columns.", type = "error")
-      rv$specs <- tibble(Name = character(), Type = character(), Values = character())
+        showNotification("Spec file must contain 'Name', 'Type', and 'Values' columns.", type = "error")
+        rv$specs <- tibble(Name = character(), Type = character(), Values = character())
     } else {
-      rv$specs <- as_tibble(df)
-      showNotification("Specifications loaded successfully.", type = "message")
+        rv$specs <- as_tibble(df)
+        showNotification("Specifications loaded successfully.", type = "message")
     }
   })
   
@@ -209,7 +199,7 @@ server <- function(input, output, session) {
               rownames = FALSE
     )
   })
-  
+
   observeEvent(input$spec_table_cell_edit, {
     info <- input$spec_table_cell_edit
     rv$specs <- editData(rv$specs, info, "spec_table")
@@ -251,9 +241,8 @@ server <- function(input, output, session) {
     withProgress(message = 'Validating data...', value = 0, {
       
       results <- map(selected, function(sheet_name) {
-        # Ensure the sheet exists in our data before proceeding
         if (!sheet_name %in% names(rv$uploaded_excel_data)) return(NULL)
-        
+          
         incProgress(1/length(selected), detail = paste("Processing sheet:", sheet_name))
         data_sheet <- rv$uploaded_excel_data[[sheet_name]]
         
@@ -288,51 +277,54 @@ server <- function(input, output, session) {
       })
     }) 
     
-    # Filter out any NULL results if a sheet wasn't found
     results <- results[!sapply(results, is.null)]
     rv$validation_results <- set_names(results, selected[selected %in% names(rv$uploaded_excel_data)])
-    
-    # Generate Error Summary
+
     error_summary_df <- imap_dfr(rv$validation_results, ~{
-      validation_matrix <- .x$validation_matrix
-      data_sheet <- .x$data
-      sheet_name <- .y
-      
-      error_indices <- which(!is.na(validation_matrix), arr.ind = TRUE)
-      
-      if(nrow(error_indices) > 0) {
-        map_dfr(1:nrow(error_indices), function(i) {
-          row_idx <- error_indices[i, 1]
-          col_idx <- error_indices[i, 2]
-          tibble(
-            Sheet = sheet_name,
-            Row = row_idx,
-            Column = colnames(data_sheet)[col_idx],
-            Value = as.character(data_sheet[row_idx, col_idx]),
-            Reason = validation_matrix[row_idx, col_idx]
-          )
-        })
-      } else {
-        tibble()
-      }
+        validation_matrix <- .x$validation_matrix
+        data_sheet <- .x$data
+        sheet_name <- .y
+
+        error_indices <- which(!is.na(validation_matrix), arr.ind = TRUE)
+        
+        if(nrow(error_indices) > 0) {
+          map_dfr(1:nrow(error_indices), function(i) {
+            row_idx <- error_indices[i, 1]
+            col_idx <- error_indices[i, 2]
+            tibble(
+              Sheet = sheet_name,
+              Row = row_idx,
+              Column = colnames(data_sheet)[col_idx],
+              Value = as.character(data_sheet[row_idx, col_idx]),
+              Reason = validation_matrix[row_idx, col_idx]
+            )
+          })
+        } else {
+          tibble()
+        }
     })
     rv$error_summary <- error_summary_df
-    
+
     if(!is.null(shiny::getDefaultReactiveDomain())) {
-      showNotification("Validation complete!", type = "message")
+        showNotification("Validation complete!", type = "message")
     }
   }
-  
+
   # --- Event Triggers for Validation ---
   observeEvent(input$validate_btn, {
     run_validation()
   })
   
   # --- Render UI Elements ---
-  output$validation_tabs <- renderUI({
-    req(length(rv$validation_results) > 0)
+  
+  # FIX: This is the new main UI output that builds the entire tabset
+  output$main_tabs_ui <- renderUI({
+    if (length(rv$validation_results) == 0) {
+      return(helpText("Validation results will appear here after you upload a file and click 'Validate'."))
+    }
     
-    tabs <- imap(rv$validation_results, ~{
+    # Create a list of tabs for each sheet
+    sheet_tabs <- imap(rv$validation_results, ~{
       sheet_name <- .y
       tabPanel(
         title = sheet_name,
@@ -347,7 +339,18 @@ server <- function(input, output, session) {
       )
     })
     
-    do.call(tabsetPanel, unname(tabs))
+    # Create the error summary tab
+    summary_tab <- list(tabPanel(
+      "Error Summary",
+      h4("Consolidated List of Validation Errors"),
+      withSpinner(DTOutput("error_summary_table")),
+      br(),
+      uiOutput("download_errors_ui")
+    ))
+    
+    # Combine sheet tabs and summary tab and create the tabset panel
+    all_tabs <- c(sheet_tabs, summary_tab)
+    do.call(tabsetPanel, c(id="main_tabset", unname(all_tabs)))
   })
   
   output$error_summary_table <- renderDT({
@@ -362,15 +365,15 @@ server <- function(input, output, session) {
               extensions = 'Buttons',
               options = list(pageLength = 10, scrollX = TRUE, dom = 'Bfrtip', buttons = c('copy', 'csv', 'excel')))
   })
-  
+
   output$download_errors_ui <- renderUI({
-    req(nrow(rv$error_summary) > 0)
-    downloadButton("download_error_summary_btn", "Download Full Error Summary")
+      req(nrow(rv$error_summary) > 0)
+      downloadButton("download_error_summary_btn", "Download Full Error Summary")
   })
   
   output$download_error_summary_btn <- downloadHandler(
-    filename = function() { paste0("validation-error-summary-", Sys.Date(), ".csv") },
-    content = function(file) { write.csv(rv$error_summary, file, row.names = FALSE) }
+      filename = function() { paste0("validation-error-summary-", Sys.Date(), ".csv") },
+      content = function(file) { write.csv(rv$error_summary, file, row.names = FALSE) }
   )
   
   # --- Dynamic Observers and Outputs for Each Sheet ---
@@ -389,7 +392,6 @@ server <- function(input, output, session) {
           rownames = FALSE,
           options = list(
             pageLength = 10, scrollX = TRUE,
-            # FIX: Moved all styling to JS callback for reliability
             rowCallback = JS(
               "function(row, data, index) {",
               "  var validationMatrix = ", jsonlite::toJSON(res$validation_matrix, na = "null"), ";",
@@ -417,7 +419,7 @@ server <- function(input, output, session) {
           rv$uploaded_excel_data[[sheet_name]], info, rownames = FALSE
         )
         
-        # FIX: Re-run the full validation after an edit
+        # Re-run the full validation after an edit
         run_validation()
       })
       
