@@ -1,302 +1,434 @@
+# R Shiny App for Excel Data Validation
+#
+# INSTRUCTIONS:
+# 1. Make sure you have the following R packages installed:
+#    install.packages(c("shiny", "shinyjs", "DT", "readxl", "writexl", "dplyr", "purrr", "shinythemes", "shinycssloaders"))
+# 2. Save this code as 'app.R' in a new folder.
+# 3. Run the app by opening R or RStudio, setting the working directory to that folder, and running: shiny::runApp()
+
+library(shiny)
+library(shinyjs)
+library(DT)
+library(readxl)
+library(writexl)
+library(dplyr)
+library(purrr)
+library(shinythemes)
+library(shinycssloaders)
+
 # ==============================================================================
-# Description:
-# A modern and robust Shiny app that uses a hybrid approach. The shiny.fluent
-# UI is used for data display, while a standard Shiny action panel with a
-# customized shinyFiles modal is used for a clean, reliable file selection.
-# This version remembers the last-used folder and adds QC checklists to the
-# exported Excel file.
-#
-# Required Packages:
-# shiny, shiny.fluent, writexl, shinyFiles, dplyr, uuid, shinyjs
-#
-# To Run:
-# 1. Make sure you have installed all the required packages:
-#    install.packages(c("shiny", "shiny.fluent", "writexl", "shinyFiles", "dplyr", "uuid", "shinyjs"))
-# 2. Save this script as 'app.R'.
-# 3. Run the app by executing `shiny::runApp()` in the R console from the
-#    directory where you saved the file.
+# Helper Functions
 # ==============================================================================
 
-# Load necessary libraries
-library(shiny)
-library(shiny.fluent)
-library(writexl)
-library(shinyFiles)
-library(dplyr)
-library(uuid)
-library(shinyjs)
+#' Validate a single value based on a specification rule.
+#'
+#' @param value The value to validate.
+#' @param rule A single row from the specifications data frame.
+#' @return A list with `is_valid` (boolean) and `message` (string).
+validate_value <- function(value, rule) {
+  # Treat empty/NA values as valid by default
+  if (is.na(value) || value == "") {
+    return(list(is_valid = TRUE, message = NA_character_))
+  }
+  
+  # Coerce value to the correct type for validation
+  value_coerced <- tryCatch({
+    switch(rule$Type,
+           "Numeric" = as.numeric(value),
+           "Categorical" = as.character(value),
+           "File Path" = as.character(value),
+           "Text" = as.character(value)
+    )
+  }, warning = function(w) { NULL }, error = function(e) { NULL })
+  
+  
+  # Validation logic based on type
+  is_valid <- switch(
+    rule$Type,
+    "Text" = {
+      is.character(value_coerced)
+    },
+    "Numeric" = {
+      !is.na(value_coerced) && is.numeric(value_coerced)
+    },
+    "Categorical" = {
+      allowed_values <- strsplit(rule$Values, ",")[[1]] %>% trimws()
+      value_coerced %in% allowed_values
+    },
+    "File Path" = {
+      path_val <- trimws(value_coerced)
+      is.character(path_val) && (file.exists(path_val) || dir.exists(path_val))
+    },
+    # Default case
+    FALSE 
+  )
+  
+  # Generate message for invalid cells
+  message <- if (!is_valid) {
+    switch(
+      rule$Type,
+      "Text" = "Invalid text format.",
+      "Numeric" = "Value must be a number.",
+      "Categorical" = paste0("Value must be one of: ", rule$Values),
+      "File Path" = "File or directory path does not exist on the server."
+    )
+  } else {
+    NA_character_
+  }
+  
+  return(list(is_valid = is_valid, message = message))
+}
+
 
 # ==============================================================================
 # UI Definition
 # ==============================================================================
 
-# Helper function to create a single "Effect" card UI
-create_effect_card <- function(id) {
-  include_opts <- list(list(key = "Y", text = "Y"), list(key = "N", text = "N"))
-  effect_type_opts <- list(list(key = "Benefit", text = "Benefit"), list(key = "Risk", text = "Risk"))
-  var_type_opts <- list(list(key = "Continuous", text = "Continuous"), list(key = "Binary", text = "Binary"))
-  direction_opts <- list(list(key = "increase", text = "increase"), list(key = "decrease", text = "decrease"))
-  
-  div(
-    class = "effect-card ms-depth-8",
-    id = paste0("card_", id),
-    Stack(
-      tokens = list(childrenGap = 10),
-      div(
-        class = "card-header",
-        Text(variant = "large", paste("Effect:", substr(id, 1, 8))),
-        IconButton.shinyInput(paste0("delete_", id), iconProps = list(iconName = "Delete"), title = "Delete this effect")
-      ),
-      p("Click a field below, then use the 'Actions' panel to choose a file.", style="font-size:0.9em; color: #605e5c;"),
-      Stack(
-        horizontal = TRUE, tokens = list(childrenGap = 10),
-        TextField.shinyInput(paste0("source_location_", id), label = "Source Location Path", value = "", readOnly=TRUE, class="path-input"),
-        TextField.shinyInput(paste0("source_file_", id), label = "Source File Name", value = "", readOnly=TRUE, class="path-input")
-      ),
-      TextField.shinyInput(paste0("ards_path_", id), label = "ARDS File Path", value = "", readOnly=TRUE, class="path-input"),
-      hr(),
-      Stack(
-        horizontal = TRUE, tokens = list(childrenGap = 10), verticalAlign = "end",
-        Dropdown.shinyInput(paste0("include_", id), label = "Include", value = "Y", options = include_opts),
-        TextField.shinyInput(paste0("effect_", id), label = "Effect Label", value = "New Endpoint"),
-        Dropdown.shinyInput(paste0("effect_type_", id), label = "Effect Type", value = "Benefit", options = effect_type_opts)
-      ),
-      Stack(
-        horizontal = TRUE, tokens = list(childrenGap = 10), verticalAlign = "end",
-        Dropdown.shinyInput(paste0("variable_type_", id), label = "Variable Type", value = "Binary", options = var_type_opts),
-        TextField.shinyInput(paste0("study_", id), label = "Study or Integration", value = "STUDY01"),
-        TextField.shinyInput(paste0("population_", id), label = "Population", value = "All Patients")
-      ),
-      Stack(
-        horizontal = TRUE, tokens = list(childrenGap = 10), verticalAlign = "end",
-        TextField.shinyInput(paste0("timepoint_", id), label = "Timepoint", value = "12 Weeks"),
-        Dropdown.shinyInput(paste0("direction_", id), label = "Improvement Direction", value = "increase", options = direction_opts)
-      ),
-      TextField.shinyInput(paste0("comments_", id), label = "Comments", multiline = TRUE, rows = 2),
-      TextField.shinyInput(paste0("ards_filters_", id), label = "ARDS Filters", value = "ARM == 'TREATMENT'")
-    )
-  )
-}
-
-# Main UI definition
-ui <- fluentPage(
+ui <- fluidPage(
+  theme = shinytheme("spacelab"),
   useShinyjs(), 
-  tags$head(
-    tags$script(HTML("
-      $(document).on('click', '.path-input input', function() {
-        var cardId = $(this).closest('.effect-card').attr('id');
-        var inputType = 'other';
-        if (this.id.includes('source_location') || this.id.includes('source_file')) {
-          inputType = 'source';
-        } else if (this.id.includes('ards_path')) {
-          inputType = 'ards';
-        }
-        var info = { cardId: cardId, inputType: inputType };
-        Shiny.setInputValue('last_clicked_card_info', info, { priority: 'event' });
-      });
-    ")),
-    tags$style(HTML("
-      body { background-color: #faf9f8; }
-      .action-panel { padding: 15px; background-color: #f3f2f1; border: 1px solid #e1dfdd; border-radius: 4px; margin-top: 20px; }
-      .action-panel .btn { width: 100%; margin-bottom: 10px; }
-      .effect-card { margin-bottom: 20px; }
-      #app-header { padding: 10px 20px; background-color: #ffffff; border-bottom: 1px solid #e1dfdd;}
-      #main-content { padding: 20px; max-width: 1200px; margin: auto; }
-      /* This CSS specifically hides the unwanted UI elements in the shinyFiles modal. */
-      .sF-navigate, .sF-view, .sF-sort { 
-        display: none !important; 
-      }
-    "))
-  ),
-  Stack(
-    id = "app-header",
-    horizontal = TRUE, tokens = list(childrenGap = 10), verticalAlign = "end",
-    TextField.shinyInput("sheet_name", label = "Current Sheet Name", value = "Sheet1"),
-    PrimaryButton.shinyInput("add_effect_btn", "Add New Effect", iconProps = list(iconName = "Add")),
-    DefaultButton.shinyInput("add_sheet_btn", "Save as New Sheet")
-  ),
-  div(
-    id = "main-content",
-    div(id = "effect_cards_container"),
-    
-    div(class = "action-panel",
-        h4("Actions"),
-        p("Click a path field in a card above, then click the appropriate button below."),
-        fluidRow(
-          column(6, uiOutput("source_file_button_ui")),
-          column(6, uiOutput("ards_file_button_ui"))
+  
+  titlePanel("Excel Data Quality and Integrity Checker"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      width = 3,
+      h4("Step 1: Define Validation Specs"),
+      helpText("Create specs below or upload a CSV file."),
+      
+      wellPanel(
+        textInput("spec_col_name", "Column Name"),
+        selectInput("spec_col_type", "Data Type", 
+                    choices = c("Text", "Numeric", "Categorical", "File Path")),
+        conditionalPanel(
+          condition = "input.spec_col_type == 'Categorical'",
+          textAreaInput("spec_col_values", "Allowed Values (comma-separated)")
         ),
-        hr(),
-        fluidRow(
-          column(12, downloadButton("global_download_btn", "Download All Sheets to Excel", class="btn btn-success btn-lg btn-block"))
-        )
+        actionButton("add_spec", "Add Spec Rule", icon = icon("plus"))
+      ),
+      
+      h5("Manage Spec Files"),
+      fileInput("upload_specs", "Upload Spec CSV", accept = ".csv"),
+      downloadButton("download_specs", "Download Specs as CSV"),
+      hr(),
+      
+      h4("Step 2: Upload & Validate Data"),
+      fileInput("upload_excel", "Upload Excel File", accept = c(".xlsx")),
+      uiOutput("sheet_selector_ui"),
+      actionButton("validate_btn", "Validate Selected Sheets", icon = icon("check"), class = "btn-primary"),
+      hr(),
+      
+      h4("User Guide"),
+      helpText(
+        "1. Add validation rules manually or upload a spec file.",
+        "2. Upload the Excel file you want to validate.",
+        "3. Select the sheets to validate from the list.",
+        "4. Click 'Validate' to see results.",
+        "5. View results in the 'Sheet Details' tab or see all issues in 'Error Summary'.",
+        "6. Hover over a red cell for an error message.",
+        "7. Double-click to edit and correct data. The table will re-validate automatically.",
+        "8. Use the 'Export' button on each tab to save the corrected data."
+      )
     ),
     
-    hr(),
-    Text(variant = "xxLarge", "Live Specification Preview"),
-    uiOutput("live_data_table")
+    mainPanel(
+      width = 9,
+      h4("Specification Rules"),
+      withSpinner(DTOutput("spec_table")),
+      hr(),
+      tabsetPanel(
+        id = "results_tabs",
+        tabPanel("Sheet Details", 
+                 h4("Validation Results per Sheet"),
+                 uiOutput("validation_tabs")
+        ),
+        tabPanel("Error Summary",
+                 h4("Consolidated List of Validation Errors"),
+                 withSpinner(DTOutput("error_summary_table")),
+                 br(),
+                 uiOutput("download_errors_ui")
+        )
+      )
+    )
   )
 )
 
 # ==============================================================================
 # Server Logic
 # ==============================================================================
+
 server <- function(input, output, session) {
   
-  all_sheets <- reactiveVal(list())
-  current_effects <- reactiveVal(list())
-  active_card_info <- reactiveVal(NULL)
-  volumes <- c(Home = fs::path_home(), "R Installation" = R.home(), getVolumes()())
+  rv <- reactiveValues(
+    specs = tibble(Name = character(), Type = character(), Values = character()),
+    uploaded_excel_data = list(),
+    validation_results = list(),
+    error_summary = tibble()
+  )
   
-  last_source_path <- reactiveVal(normalizePath("~"))
-  last_ards_path <- reactiveVal(normalizePath("~"))
-  
-  # --- Dynamic UI for File Chooser Buttons ---
-  output$source_file_button_ui <- renderUI({
-    shinyFileChoose(input, "source_file_chooser", roots = volumes, session = session, defaultPath = last_source_path())
-    shinyFilesButton("source_file_chooser", "Choose Source File", "Please select a source file", multiple=FALSE, class="btn btn-primary")
-  })
-  
-  output$ards_file_button_ui <- renderUI({
-    shinyFileChoose(input, "ards_file_chooser", roots = volumes, session = session, defaultPath = last_ards_path())
-    shinyFilesButton("ards_file_chooser", "Choose ARDS File", "Please select an ARDS file", multiple=FALSE, class="btn btn-primary")
-  })
-  
-  # --- Event Handlers ---
-  observeEvent(input$add_effect_btn, {
-    id <- UUIDgenerate()
-    insertUI(selector = "#effect_cards_container", where = "beforeEnd", ui = create_effect_card(id))
-    current_effects(c(isolate(current_effects()), id))
-  })
-  
-  observeEvent(input$last_clicked_card_info, {
-    active_card_info(input$last_clicked_card_info)
-  })
-  
-  observeEvent(input$source_file_chooser, {
-    info <- active_card_info()
-    req(info, info$inputType == 'source', is.list(input$source_file_chooser))
+  # --- Spec Management Logic ---
+  observeEvent(input$add_spec, {
+    req(input$spec_col_name, input$spec_col_type)
     
-    file_info <- parseFilePaths(volumes, input$source_file_chooser)
-    if (nrow(file_info) > 0) {
-      card_id_base <- sub("card_", "", info$cardId)
-      updateTextField.shinyInput(session, paste0("source_location_", card_id_base), value = as.character(dirname(file_info$datapath)))
-      updateTextField.shinyInput(session, paste0("source_file_", card_id_base), value = as.character(file_info$name))
-      last_source_path(dirname(file_info$datapath))
-    }
-  })
-  
-  observeEvent(input$ards_file_chooser, {
-    info <- active_card_info()
-    req(info, info$inputType == 'ards', is.list(input$ards_file_chooser))
-    
-    file_info <- parseFilePaths(volumes, input$ards_file_chooser)
-    if (nrow(file_info) > 0) {
-      card_id_base <- sub("card_", "", info$cardId)
-      updateTextField.shinyInput(session, paste0("ards_path_", card_id_base), value = as.character(file_info$datapath))
-      last_ards_path(dirname(file_info$datapath))
-    }
-  })
-  
-  observe({
-    req(current_effects())
-    lapply(current_effects(), function(id) {
-      observeEvent(input[[paste0("delete_", id)]], {
-        removeUI(selector = paste0("#card_", id), immediate = TRUE)
-        current_effects(isolate(current_effects())[isolate(current_effects()) != id])
-      }, ignoreInit = TRUE, once = TRUE, autoDestroy = TRUE)
-    })
-  })
-  
-  # --- Reactive Data Frame for Live Preview ---
-  live_df <- reactive({
-    req(length(current_effects()) > 0)
-    reactiveValuesToList(input)
-    
-    effect_ids <- isolate(current_effects())
-    req(input[[paste0("include_", effect_ids[[1]])]])
-    
-    spec_list <- lapply(effect_ids, function(id) {
-      data.frame(
-        Include = input[[paste0("include_", id)]], Effect = input[[paste0("effect_", id)]],
-        Effect_Type = input[[paste0("effect_type_", id)]], Variable_Type = input[[paste0("variable_type_", id)]],
-        Study_or_Integration = input[[paste0("study_", id)]], Population = input[[paste0("population_", id)]],
-        Timepoint = input[[paste0("timepoint_", id)]], Improvement_direction = input[[paste0("direction_", id)]],
-        Comments = input[[paste0("comments_", id)]], Source_Location = input[[paste0("source_location_", id)]],
-        Source_File = input[[paste0("source_file_", id)]], ARDS_Path = input[[paste0("ards_path_", id)]],
-        ARDS_filters = input[[paste0("ards_filters_", id)]], stringsAsFactors = FALSE, check.names = FALSE
-      )
-    })
-    bind_rows(spec_list)
-  })
-  
-  output$live_data_table <- renderUI({
-    df <- if (length(current_effects()) > 0) live_df() else data.frame()
-    if (nrow(df) > 0) {
-      DetailsList(items = df, isHeaderVisible = TRUE, selectionMode = "none")
-    } else {
-      p("No effects added for the current sheet.", style="padding-left: 10px;")
-    }
-  })
-  
-  # --- Sheet and Download Logic ---
-  observeEvent(input$add_sheet_btn, {
-    if (length(current_effects()) == 0) {
-      showNotification("Cannot save an empty sheet.", type = "warning", duration = 5)
+    if(input$spec_col_name %in% rv$specs$Name){
+      showNotification("A rule for this column name already exists.", type = "warning")
       return()
     }
-    sheet_name <- isolate(input$sheet_name)
-    req(nchar(sheet_name) > 0)
     
-    current_sheets <- isolate(all_sheets())
-    current_sheets[[sheet_name]] <- live_df()
-    all_sheets(current_sheets)
+    new_rule <- tibble(
+      Name = input$spec_col_name,
+      Type = input$spec_col_type,
+      Values = if (input$spec_col_type == "Categorical") input$spec_col_values else NA_character_
+    )
+    rv$specs <- bind_rows(rv$specs, new_rule)
     
-    removeUI(selector = "#effect_cards_container > div", multiple = TRUE)
-    current_effects(list())
-    updateTextField.shinyInput(session, "sheet_name", value = paste0("Sheet", length(current_sheets) + 1))
-    showNotification(paste("Sheet '", sheet_name, "' saved!", sep=""), type = "success", duration = 5)
+    updateTextInput(session, "spec_col_name", value = "")
+    updateTextAreaInput(session, "spec_col_values", value = "")
   })
   
-  output$global_download_btn <- downloadHandler(
-    filename = function() {
-      paste0("Specification_File-", Sys.Date(), ".xlsx")
-    },
-    content = function(file) {
-      # --- Create final list of sheets to export ---
-      final_sheets <- isolate(all_sheets())
-      if (length(current_effects()) > 0) {
-        final_sheets[[isolate(input$sheet_name)]] <- live_df()
-      }
-      req(length(final_sheets) > 0, cancelOutput = TRUE)
-      
-      # --- FIX: Generate QC sheets and add them to the list ---
-      sheets_with_qc <- list()
-      for (sheet_name in names(final_sheets)) {
-        # 1. Add the original specification sheet
-        sheets_with_qc[[sheet_name]] <- final_sheets[[sheet_name]]
-        
-        # 2. Create and add the corresponding QC checklist sheet
-        spec_df <- final_sheets[[sheet_name]]
-        if ("Effect" %in% names(spec_df) && nrow(spec_df) > 0) {
-          qc_df <- data.frame(
-            Endpoint = spec_df$Effect,
-            `QC Axis Name` = "",
-            `QC Value` = "",
-            `QC Confidence Intervals` = "",
-            `QC Effect Measure Type` = "",
-            `QC Axis Directions` = "",
-            check.names = FALSE # Important for column names with spaces
-          )
-          qc_sheet_name <- paste0(sheet_name, "_QC")
-          sheets_with_qc[[qc_sheet_name]] <- qc_df
-        }
-      }
-      
-      # Write the final combined list to the Excel file
-      writexl::write_xlsx(sheets_with_qc, path = file)
+  observeEvent(input$upload_specs, {
+    req(input$upload_specs)
+    df <- try(read.csv(input$upload_specs$datapath, stringsAsFactors = FALSE, check.names = FALSE))
+    if(inherits(df, "try-error")){
+      showNotification("Failed to read the spec file. Please ensure it's a valid CSV.", type = "error")
+      return()
     }
+    if(!all(c("Name", "Type", "Values") %in% colnames(df))){
+      showNotification("Spec file must contain 'Name', 'Type', and 'Values' columns.", type = "error")
+      rv$specs <- tibble(Name = character(), Type = character(), Values = character())
+    } else {
+      rv$specs <- as_tibble(df)
+      showNotification("Specifications loaded successfully.", type = "message")
+    }
+  })
+  
+  output$spec_table <- renderDT({
+    datatable(rv$specs, 
+              editable = TRUE,
+              options = list(pageLength = 5, dom = 'tip'),
+              rownames = FALSE
+    )
+  })
+  
+  observeEvent(input$spec_table_cell_edit, {
+    info <- input$spec_table_cell_edit
+    rv$specs <- editData(rv$specs, info, "spec_table")
+  })
+  
+  output$download_specs <- downloadHandler(
+    filename = function() { paste0("data-specs-", Sys.Date(), ".csv") },
+    content = function(file) { write.csv(rv$specs, file, row.names = FALSE) }
   )
+  
+  # --- Data Upload Logic ---
+  observeEvent(input$upload_excel, {
+    req(input$upload_excel)
+    path <- input$upload_excel$datapath
+    
+    tryCatch({
+      sheet_names <- excel_sheets(path)
+      rv$uploaded_excel_data <- set_names(map(sheet_names, ~read_excel(path, sheet = .x, col_types = "text")), sheet_names)
+      
+      output$sheet_selector_ui <- renderUI({
+        checkboxGroupInput("selected_sheets", "Select Sheets to Validate:",
+                           choices = sheet_names, selected = sheet_names)
+      })
+      showNotification(paste("Excel file loaded with", length(sheet_names), "sheets."), type = "message")
+      
+    }, error = function(e) {
+      showNotification(paste("Error reading Excel file:", e$message), type = "error")
+      output$sheet_selector_ui <- renderUI({ helpText("Could not read the uploaded file.") })
+    })
+  })
+  
+  # --- Core Validation Function ---
+  run_validation <- function() {
+    req(input$selected_sheets, nrow(rv$specs) > 0, length(rv$uploaded_excel_data) > 0)
+    
+    selected <- input$selected_sheets
+    specs <- rv$specs
+    
+    withProgress(message = 'Validating data...', value = 0, {
+      
+      results <- map(selected, function(sheet_name) {
+        # Ensure the sheet exists in our data before proceeding
+        if (!sheet_name %in% names(rv$uploaded_excel_data)) return(NULL)
+        
+        incProgress(1/length(selected), detail = paste("Processing sheet:", sheet_name))
+        data_sheet <- rv$uploaded_excel_data[[sheet_name]]
+        
+        spec_cols <- specs$Name
+        data_cols <- colnames(data_sheet)
+        missing_cols <- setdiff(spec_cols, data_cols)
+        extra_cols <- setdiff(data_cols, spec_cols)
+        
+        validation_matrix <- matrix(NA_character_, nrow = nrow(data_sheet), ncol = ncol(data_sheet))
+        colnames(validation_matrix) <- data_cols
+        
+        for (spec_rule_row in 1:nrow(specs)) {
+          rule <- specs[spec_rule_row, ]
+          col_name <- rule$Name
+          
+          if (col_name %in% data_cols) {
+            col_idx <- which(colnames(data_sheet) == col_name)
+            for (row_idx in 1:nrow(data_sheet)) {
+              value <- data_sheet[[col_name]][row_idx]
+              validation_output <- validate_value(value, rule)
+              if (!validation_output$is_valid) {
+                validation_matrix[row_idx, col_idx] <- validation_output$message
+              }
+            }
+          }
+        }
+        
+        return(list(
+          data = data_sheet, validation_matrix = validation_matrix,
+          missing_cols = missing_cols, extra_cols = extra_cols
+        ))
+      })
+    }) 
+    
+    # Filter out any NULL results if a sheet wasn't found
+    results <- results[!sapply(results, is.null)]
+    rv$validation_results <- set_names(results, selected[selected %in% names(rv$uploaded_excel_data)])
+    
+    # Generate Error Summary
+    error_summary_df <- imap_dfr(rv$validation_results, ~{
+      validation_matrix <- .x$validation_matrix
+      data_sheet <- .x$data
+      sheet_name <- .y
+      
+      error_indices <- which(!is.na(validation_matrix), arr.ind = TRUE)
+      
+      if(nrow(error_indices) > 0) {
+        map_dfr(1:nrow(error_indices), function(i) {
+          row_idx <- error_indices[i, 1]
+          col_idx <- error_indices[i, 2]
+          tibble(
+            Sheet = sheet_name,
+            Row = row_idx,
+            Column = colnames(data_sheet)[col_idx],
+            Value = as.character(data_sheet[row_idx, col_idx]),
+            Reason = validation_matrix[row_idx, col_idx]
+          )
+        })
+      } else {
+        tibble()
+      }
+    })
+    rv$error_summary <- error_summary_df
+    
+    if(!is.null(shiny::getDefaultReactiveDomain())) {
+      showNotification("Validation complete!", type = "message")
+    }
+  }
+  
+  # --- Event Triggers for Validation ---
+  observeEvent(input$validate_btn, {
+    run_validation()
+  })
+  
+  # --- Render UI Elements ---
+  output$validation_tabs <- renderUI({
+    req(length(rv$validation_results) > 0)
+    
+    tabs <- imap(rv$validation_results, ~{
+      sheet_name <- .y
+      tabPanel(
+        title = sheet_name,
+        if (length(.x$missing_cols) > 0) {
+          div(style="color:orange; margin-bottom:10px;", paste("Warning: MISSING columns:", paste(.x$missing_cols, collapse=", ")))
+        },
+        if (length(.x$extra_cols) > 0) {
+          div(style="color:#888; margin-bottom:10px;", paste("Info: Extra columns not in specs:", paste(.x$extra_cols, collapse=", ")))
+        },
+        withSpinner(DTOutput(paste0("table_", sheet_name))),
+        downloadButton(paste0("download_", sheet_name), "Export Corrected Sheet as XLSX")
+      )
+    })
+    
+    do.call(tabsetPanel, unname(tabs))
+  })
+  
+  output$error_summary_table <- renderDT({
+    if (nrow(rv$error_summary) == 0 && length(rv$validation_results) > 0) {
+      return(datatable(data.frame(Message = "No validation errors found across all checked sheets."), 
+                       rownames = FALSE, options = list(dom = 't')))
+    }
+    req(nrow(rv$error_summary) > 0)
+    datatable(rv$error_summary,
+              rownames = FALSE,
+              filter = 'top',
+              extensions = 'Buttons',
+              options = list(pageLength = 10, scrollX = TRUE, dom = 'Bfrtip', buttons = c('copy', 'csv', 'excel')))
+  })
+  
+  output$download_errors_ui <- renderUI({
+    req(nrow(rv$error_summary) > 0)
+    downloadButton("download_error_summary_btn", "Download Full Error Summary")
+  })
+  
+  output$download_error_summary_btn <- downloadHandler(
+    filename = function() { paste0("validation-error-summary-", Sys.Date(), ".csv") },
+    content = function(file) { write.csv(rv$error_summary, file, row.names = FALSE) }
+  )
+  
+  # --- Dynamic Observers and Outputs for Each Sheet ---
+  observe({
+    req(length(rv$validation_results) > 0)
+    
+    walk(names(rv$validation_results), function(sheet_name) {
+      
+      # Render the DataTable for the sheet
+      output[[paste0("table_", sheet_name)]] <- renderDT({
+        res <- rv$validation_results[[sheet_name]]
+        
+        datatable(
+          res$data,
+          editable = list(target = 'cell'),
+          rownames = FALSE,
+          options = list(
+            pageLength = 10, scrollX = TRUE,
+            # FIX: Moved all styling to JS callback for reliability
+            rowCallback = JS(
+              "function(row, data, index) {",
+              "  var validationMatrix = ", jsonlite::toJSON(res$validation_matrix, na = "null"), ";",
+              # DT's 'index' is 0-based, matching the JS array index.
+              "  for (var j=0; j < data.length; j++) {",
+              "    if (validationMatrix[index][j] !== null) {",
+              "      var cell = $(row).find('td').eq(j);",
+              "      cell.attr('title', validationMatrix[index][j]);",
+              # Apply CSS styling directly to the invalid cell
+              "      cell.css('background-color', 'rgba(255, 135, 135, 0.7)');",
+              "    }",
+              "  }",
+              "}"
+            )
+          )
+        )
+      })
+      
+      # Observer for cell edits
+      observeEvent(input[[paste0("table_", sheet_name, "_cell_edit")]], {
+        info <- input[[paste0("table_", sheet_name, "_cell_edit")]]
+        
+        # Update data in reactive value
+        rv$uploaded_excel_data[[sheet_name]] <- editData(
+          rv$uploaded_excel_data[[sheet_name]], info, rownames = FALSE
+        )
+        
+        # FIX: Re-run the full validation after an edit
+        run_validation()
+      })
+      
+      # Download handler for the sheet
+      output[[paste0("download_", sheet_name)]] <- downloadHandler(
+        filename = function() { paste0("corrected-", sheet_name, "-", Sys.Date(), ".xlsx") },
+        content = function(file) { write_xlsx(setNames(list(rv$uploaded_excel_data[[sheet_name]]), sheet_name), file) }
+      )
+    })
+  })
 }
 
+# Run the application
 shinyApp(ui = ui, server = server)
