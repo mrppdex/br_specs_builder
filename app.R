@@ -2,7 +2,7 @@
 #
 # INSTRUCTIONS:
 # 1. Make sure you have the following R packages installed:
-#    install.packages(c("shiny", "shinyjs", "DT", "dplyr", "purrr", "shinythemes", "haven", "rlang", "bslib", "openxlsx"))
+#    install.packages(c("shiny", "shinyjs", "DT", "dplyr", "purrr", "haven", "rlang", "bslib", "openxlsx"))
 # 2. Save this code as 'app.R' in a new folder.
 # 3. Run the app by opening R or RStudio, setting the working directory to that folder, and running: shiny::runApp()
 
@@ -26,9 +26,16 @@ library(openxlsx)   # For all Excel operations
 #' @param rule A single row from the specifications data frame.
 #' @return A list with `is_valid` (boolean) and `message` (string).
 validate_value <- function(value, rule) {
-  # Treat empty/NA values as valid by default
-  if (is.na(value) || value == "") {
-    return(list(is_valid = TRUE, message = NA_character_))
+  # FIX: Categorical values are now required and cannot be empty.
+  if (rule$Type == "Categorical") {
+    if (is.na(value) || value == "") {
+      return(list(is_valid = FALSE, message = "Value is required and cannot be empty."))
+    }
+  } else {
+    # For all other types, empty values are considered valid by default.
+    if (is.na(value) || value == "") {
+      return(list(is_valid = TRUE, message = NA_character_))
+    }
   }
   
   value_coerced <- tryCatch({
@@ -60,7 +67,6 @@ validate_value <- function(value, rule) {
       "Text" = "Invalid text format.",
       "Numeric" = "Value must be a number.",
       "Categorical" = paste0("Value must be one of: ", rule$Values),
-      # FIX: Updated error message
       "File Path" = "File or directory path does not exist."
     )
   } else {
@@ -95,7 +101,7 @@ validate_ards <- function(ards_path, filter_string, unique_cols_str) {
   })
   
   if (!is.data.frame(ards_data)) return(ards_data) 
-  
+
   filtered_data <- tryCatch({
     filter_expr <- rlang::parse_expr(filter_string)
     ards_data %>% filter(!!filter_expr)
@@ -135,12 +141,9 @@ validate_ards <- function(ards_path, filter_string, unique_cols_str) {
 
 ui <- page_sidebar(
   theme = bs_theme(version = 5, bootswatch = "spacelab"),
-  # FIX: New title
   title = "Specs Quality and Integrity Checker",
   
-  # UI: All controls are now in a bslib sidebar
   sidebar = sidebar(
-    # UI: Accordion for better organization
     accordion(
       open = TRUE,
       accordion_panel(
@@ -149,14 +152,14 @@ ui <- page_sidebar(
         selectInput("spec_col_type", "Data Type", 
                     choices = c("Text", "Numeric", "Categorical", "File Path", "ARDS")),
         conditionalPanel(
-          condition = "input.spec_col_type == 'Categorical'",
-          textAreaInput("spec_col_values", "Allowed Values (comma-separated)")
+            condition = "input.spec_col_type == 'Categorical'",
+            textAreaInput("spec_col_values", "Allowed Values (comma-separated)")
         ),
         conditionalPanel(
-          condition = "input.spec_col_type == 'ARDS'",
-          textInput("ards_path_col", "Name of Path Column", placeholder = "e.g., PathToARDS"),
-          textInput("ards_filter_col", "Name of Filter Column", placeholder = "e.g., FilterCondition"),
-          textInput("ards_unique_cols", "Columns for Uniqueness Check", value = "RESULTTYPE", placeholder = "e.g., RESULTTYPE, RESULT")
+            condition = "input.spec_col_type == 'ARDS'",
+            textInput("ards_path_col", "Name of Path Column", placeholder = "e.g., PathToARDS"),
+            textInput("ards_filter_col", "Name of Filter Column", placeholder = "e.g., FilterCondition"),
+            textInput("ards_unique_cols", "Columns for Uniqueness Check", value = "RESULTTYPE", placeholder = "e.g., RESULTTYPE, RESULT")
         ),
         actionButton("add_spec", "Add Spec Rule", icon = icon("plus")),
         hr(),
@@ -169,13 +172,11 @@ ui <- page_sidebar(
         uiOutput("sheet_selector_ui"),
         actionButton("validate_btn", "Validate Selected Sheets", icon = icon("check"), class = "btn-primary"),
         hr(),
-        # UI: New single download button for all sheets
         uiOutput("download_all_ui")
       )
     )
   ),
   
-  # UI: Main content area uses cards for better layout
   card(
     card_header("Specification Rules"),
     card_body(DTOutput("spec_table"))
@@ -204,8 +205,8 @@ server <- function(input, output, session) {
     req(input$spec_col_name, input$spec_col_type)
     
     if(input$spec_col_name %in% rv$specs$Name){
-      showNotification("A rule for this column name already exists.", type = "warning")
-      return()
+        showNotification("A rule for this column name already exists.", type = "warning")
+        return()
     }
     
     spec_values <- NA_character_
@@ -217,7 +218,7 @@ server <- function(input, output, session) {
       unique_cols <- if (is.null(input$ards_unique_cols)) "RESULTTYPE" else input$ards_unique_cols
       spec_values <- paste0("path_col=", path_col, ";filter_col=", filter_col, ";unique_cols=", unique_cols)
     }
-    
+
     new_rule <- tibble(
       Name = input$spec_col_name,
       Type = input$spec_col_type,
@@ -236,22 +237,22 @@ server <- function(input, output, session) {
     req(input$upload_specs)
     df <- try(read.csv(input$upload_specs$datapath, stringsAsFactors = FALSE, check.names = FALSE))
     if(inherits(df, "try-error")){
-      showNotification("Failed to read the spec file. Please ensure it's a valid CSV.", type = "error")
-      return()
+        showNotification("Failed to read the spec file. Please ensure it's a valid CSV.", type = "error")
+        return()
     }
     if(!all(c("Name", "Type", "Values") %in% colnames(df))){
-      showNotification("Spec file must contain 'Name', 'Type', and 'Values' columns.", type = "error")
-      rv$specs <- tibble(Name = character(), Type = character(), Values = character())
+        showNotification("Spec file must contain 'Name', 'Type', and 'Values' columns.", type = "error")
+        rv$specs <- tibble(Name = character(), Type = character(), Values = character())
     } else {
-      rv$specs <- as_tibble(df)
-      showNotification("Specifications loaded successfully.", type = "message")
+        rv$specs <- as_tibble(df)
+        showNotification("Specifications loaded successfully.", type = "message")
     }
   })
   
   output$spec_table <- renderDT({
     datatable(rv$specs, editable = TRUE, options = list(pageLength = 5, dom = 'tip'), rownames = FALSE)
   })
-  
+
   observeEvent(input$spec_table_cell_edit, {
     info <- input$spec_table_cell_edit
     rv$specs <- editData(rv$specs, info, "spec_table")
@@ -268,9 +269,7 @@ server <- function(input, output, session) {
     path <- input$upload_excel$datapath
     
     tryCatch({
-      # FIX: Use openxlsx to get sheet names
       sheet_names <- openxlsx::getSheetNames(path)
-      # FIX: Use openxlsx to read data from all sheets
       rv$uploaded_excel_data <- set_names(map(sheet_names, ~openxlsx::read.xlsx(path, sheet = .x)), sheet_names)
       
       output$sheet_selector_ui <- renderUI({
@@ -305,10 +304,10 @@ server <- function(input, output, session) {
           if (is.na(existing_msg)) return(new_msg)
           else return(paste(existing_msg, new_msg, sep = " | "))
         }
-        
+
         standard_specs <- specs %>% filter(Type != "ARDS")
         ards_specs <- specs %>% filter(Type == "ARDS")
-        
+
         if(nrow(standard_specs) > 0) {
           for (spec_rule_row in 1:nrow(standard_specs)) {
             rule <- standard_specs[spec_rule_row, ]
@@ -347,7 +346,7 @@ server <- function(input, output, session) {
               filter_str <- data_sheet[[filter_col_name]][row_idx]
               validation_output <- validate_ards(ards_path, filter_str, unique_cols_str)
               if (!validation_output$is_valid) {
-                validation_matrix[row_idx, path_col_idx] <- append_error(validation_matrix[row_idx, path_col_idx], validation_output$message)
+                 validation_matrix[row_idx, path_col_idx] <- append_error(validation_matrix[row_idx, path_col_idx], validation_output$message)
               }
             }
           }
@@ -355,38 +354,38 @@ server <- function(input, output, session) {
         
         standard_col_names <- standard_specs$Name
         ards_dependent_cols <- if(nrow(ards_specs) > 0) {
-          purrr::map(ards_specs$Values, function(v) {
-            p <- strsplit(v, ";")[[1]]
-            c(sub("path_col=", "", p[grepl("path_col=", p)]), sub("filter_col=", "", p[grepl("filter_col=", p)]))
-          }) %>% unlist() %>% unique()
+            purrr::map(ards_specs$Values, function(v) {
+                p <- strsplit(v, ";")[[1]]
+                c(sub("path_col=", "", p[grepl("path_col=", p)]), sub("filter_col=", "", p[grepl("filter_col=", p)]))
+            }) %>% unlist() %>% unique()
         } else { c() }
         all_expected_cols <- unique(c(standard_col_names, ards_dependent_cols))
-        
+
         return(list(data = data_sheet, validation_matrix = validation_matrix,
-                    missing_cols = setdiff(all_expected_cols, colnames(data_sheet)), 
-                    extra_cols = setdiff(colnames(data_sheet), all_expected_cols)))
+          missing_cols = setdiff(all_expected_cols, colnames(data_sheet)), 
+          extra_cols = setdiff(colnames(data_sheet), all_expected_cols)))
       })
     }) 
     
     results <- results[!sapply(results, is.null)]
     rv$validation_results <- set_names(results, selected[selected %in% names(rv$uploaded_excel_data)])
-    
+
     error_summary_df <- imap_dfr(rv$validation_results, ~{
-      validation_matrix <- .x$validation_matrix
-      error_indices <- which(!is.na(validation_matrix), arr.ind = TRUE)
-      if(nrow(error_indices) > 0) {
-        map_dfr(1:nrow(error_indices), function(i) {
-          row_idx <- error_indices[i, "row"]; col_idx <- error_indices[i, "col"]
-          tibble(Sheet = .y, Row = row_idx, Column = colnames(.x$data)[col_idx],
-                 Value = as.character(.x$data[row_idx, col_idx]), Reason = validation_matrix[row_idx, col_idx])
-        })
-      } else { tibble() }
+        validation_matrix <- .x$validation_matrix
+        error_indices <- which(!is.na(validation_matrix), arr.ind = TRUE)
+        if(nrow(error_indices) > 0) {
+          map_dfr(1:nrow(error_indices), function(i) {
+            row_idx <- error_indices[i, "row"]; col_idx <- error_indices[i, "col"]
+            tibble(Sheet = .y, Row = row_idx, Column = colnames(.x$data)[col_idx],
+                   Value = as.character(.x$data[row_idx, col_idx]), Reason = validation_matrix[row_idx, col_idx])
+          })
+        } else { tibble() }
     })
     rv$error_summary <- error_summary_df
-    
+
     if(!is.null(shiny::getDefaultReactiveDomain())) { showNotification("Validation complete!", type = "message") }
   }
-  
+
   # --- Event Triggers for Validation ---
   observeEvent(input$validate_btn, { run_validation() })
   
@@ -398,19 +397,18 @@ server <- function(input, output, session) {
     
     sheet_tabs <- imap(rv$validation_results, ~{
       tabPanel(title = .y,
-               if (length(.x$missing_cols) > 0) {
-                 div(style="color:orange; margin-bottom:10px;", paste("Warning: MISSING columns:", paste(.x$missing_cols, collapse=", ")))
-               },
-               if (length(.x$extra_cols) > 0) {
-                 div(style="color:#888; margin-bottom:10px;", paste("Info: Extra columns not in specs:", paste(.x$extra_cols, collapse=", ")))
-               },
-               DTOutput(paste0("table_", .y))
-               # Per-sheet download button removed
+        if (length(.x$missing_cols) > 0) {
+          div(style="color:orange; margin-bottom:10px;", paste("Warning: MISSING columns:", paste(.x$missing_cols, collapse=", ")))
+        },
+        if (length(.x$extra_cols) > 0) {
+          div(style="color:#888; margin-bottom:10px;", paste("Info: Extra columns not in specs:", paste(.x$extra_cols, collapse=", ")))
+        },
+        DTOutput(paste0("table_", .y))
       )
     })
     
     summary_tab <- list(tabPanel("Error Summary",
-                                 h4("Consolidated List of Validation Errors"), DTOutput("error_summary_table"), br(), uiOutput("download_errors_ui")))
+      h4("Consolidated List of Validation Errors"), DTOutput("error_summary_table"), br(), uiOutput("download_errors_ui")))
     
     do.call(tabsetPanel, c(id="main_tabset", unname(c(sheet_tabs, summary_tab))))
   })
@@ -420,39 +418,41 @@ server <- function(input, output, session) {
       return(datatable(data.frame(Message = "No validation errors found across all checked sheets."), rownames = FALSE, options = list(dom = 't')))
     }
     req(nrow(rv$error_summary) > 0)
-    datatable(rv$error_summary, rownames = FALSE, filter = 'top', extensions = 'Buttons',
-              options = list(pageLength = 10, scrollX = TRUE, dom = 'Bfrtip', buttons = c('copy', 'csv', 'excel')))
+    # FIX: Remove Buttons extension
+    datatable(rv$error_summary, rownames = FALSE, filter = 'top',
+              options = list(pageLength = 10, scrollX = TRUE, dom = 'frtip'))
   })
-  
+
   output$download_errors_ui <- renderUI({
     req(nrow(rv$error_summary) > 0)
-    downloadButton("download_error_summary_btn", "Download Full Error Summary")
+    # FIX: Update button label
+    downloadButton("download_error_summary_btn", "Download Full Error Report")
   })
   
   output$download_error_summary_btn <- downloadHandler(
-    filename = function() { paste0("validation-error-summary-", Sys.Date(), ".csv") },
-    content = function(file) { write.csv(rv$error_summary, file, row.names = FALSE) }
+    # FIX: Change filename extension
+    filename = function() { paste0("validation-error-summary-", Sys.Date(), ".xlsx") },
+    # FIX: Use openxlsx to write the file
+    content = function(file) { openxlsx::write.xlsx(rv$error_summary, file) }
   )
   
   # --- UI for Single Download Button ---
   output$download_all_ui <- renderUI({
-    # Show button only after validation has been run
     req(length(rv$validation_results) > 0)
     downloadButton("download_all_sheets_btn", "Export All Corrected Sheets", icon = icon("download"))
   })
-  
+
   # --- Download Handler for All Sheets ---
   output$download_all_sheets_btn <- downloadHandler(
     filename = function() {
-      paste0("corrected-data-", Sys.Date(), ".xlsx")
+        paste0("corrected-data-", Sys.Date(), ".xlsx")
     },
     content = function(file) {
-      # Get the corrected data for the sheets that were validated
-      sheets_to_write <- rv$uploaded_excel_data[names(rv$validation_results)]
-      openxlsx::write.xlsx(sheets_to_write, file)
+        sheets_to_write <- rv$uploaded_excel_data[names(rv$validation_results)]
+        openxlsx::write.xlsx(sheets_to_write, file)
     }
   )
-  
+
   # --- Dynamic Observers and Outputs for Each Sheet ---
   observe({
     req(length(rv$validation_results) > 0)
@@ -461,26 +461,25 @@ server <- function(input, output, session) {
       output[[paste0("table_", sheet_name)]] <- renderDT({
         res <- rv$validation_results[[sheet_name]]
         datatable(res$data, editable = list(target = 'cell'), rownames = FALSE,
-                  options = list(pageLength = 10, scrollX = TRUE,
-                                 rowCallback = JS(
-                                   "function(row, data, index) {",
-                                   "  var validationMatrix = ", jsonlite::toJSON(res$validation_matrix, na = "null"), ";",
-                                   "  for (var j=0; j < data.length; j++) {",
-                                   "    if (validationMatrix[index] && validationMatrix[index][j] !== null) {",
-                                   "      var cell = $(row).find('td').eq(j);",
-                                   "      cell.attr('title', validationMatrix[index][j]);",
-                                   "      cell.css('background-color', 'rgba(255, 135, 135, 0.7)');",
-                                   "    }",
-                                   "  }",
-                                   "}"
-                                 )
-                  )
+          options = list(pageLength = 10, scrollX = TRUE,
+            rowCallback = JS(
+              "function(row, data, index) {",
+              "  var validationMatrix = ", jsonlite::toJSON(res$validation_matrix, na = "null"), ";",
+              "  for (var j=0; j < data.length; j++) {",
+              "    if (validationMatrix[index] && validationMatrix[index][j] !== null) {",
+              "      var cell = $(row).find('td').eq(j);",
+              "      cell.attr('title', validationMatrix[index][j]);",
+              "      cell.css('background-color', 'rgba(255, 135, 135, 0.7)');",
+              "    }",
+              "  }",
+              "}"
+            )
+          )
         )
       })
       
       observeEvent(input[[paste0("table_", sheet_name, "_cell_edit")]], {
         info <- input[[paste0("table_", sheet_name, "_cell_edit")]]
-        # Coerce value to character to avoid type issues with openxlsx
         rv$uploaded_excel_data[[sheet_name]][info$row, info$col] <- as.character(info$value)
         run_validation()
       })
