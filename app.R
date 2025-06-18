@@ -418,22 +418,50 @@ server <- function(input, output, session) {
       return(datatable(data.frame(Message = "No validation errors found across all checked sheets."), rownames = FALSE, options = list(dom = 't')))
     }
     req(nrow(rv$error_summary) > 0)
-    # FIX: Remove Buttons extension
     datatable(rv$error_summary, rownames = FALSE, filter = 'top',
               options = list(pageLength = 10, scrollX = TRUE, dom = 'frtip'))
   })
 
   output$download_errors_ui <- renderUI({
     req(nrow(rv$error_summary) > 0)
-    # FIX: Update button label
     downloadButton("download_error_summary_btn", "Download Full Error Report")
   })
   
+  # FIX: Updated download handler for advanced Excel formatting
   output$download_error_summary_btn <- downloadHandler(
-    # FIX: Change filename extension
     filename = function() { paste0("validation-error-summary-", Sys.Date(), ".xlsx") },
-    # FIX: Use openxlsx to write the file
-    content = function(file) { openxlsx::write.xlsx(rv$error_summary, file) }
+    content = function(file) {
+      req(nrow(rv$error_summary) > 0)
+      
+      # Sort data
+      sorted_summary <- rv$error_summary %>%
+        arrange(Sheet, as.numeric(Row), Column)
+        
+      # Create a new workbook
+      wb <- createWorkbook()
+      addWorksheet(wb, "Error Summary")
+      
+      # Add and merge the main title
+      writeData(wb, "Error Summary", "Specs Quality and Integrity Checker", startCol = 1, startRow = 1)
+      mergeCells(wb, "Error Summary", cols = 1:ncol(sorted_summary), rows = 1)
+      
+      # Style for the title (bold, centered)
+      titleStyle <- createStyle(fontSize = 14, textDecoration = "bold", halign = "center")
+      addStyle(wb, "Error Summary", style = titleStyle, rows = 1, cols = 1)
+      
+      # Write the data frame starting from row 3
+      writeData(wb, "Error Summary", sorted_summary, startRow = 3)
+      
+      # Style for the header (bold)
+      headerStyle <- createStyle(textDecoration = "bold")
+      addStyle(wb, "Error Summary", style = headerStyle, rows = 3, cols = 1:ncol(sorted_summary), gridExpand = TRUE)
+      
+      # Set column widths to auto
+      setColWidths(wb, "Error Summary", cols = 1:ncol(sorted_summary), widths = "auto")
+      
+      # Save the workbook
+      saveWorkbook(wb, file, overwrite = TRUE)
+    }
   )
   
   # --- UI for Single Download Button ---
