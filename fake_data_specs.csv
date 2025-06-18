@@ -1,0 +1,6 @@
+"Name","Type","Values"
+"Include","Categorical","Y,N"
+"Path","File Path",NA
+"Effect_type","Categorical","Benefit,Risk"
+"Filter","Text",NA
+"ARDS","ARDS","path_col=Path;filter_col=Filter;unique_cols=RESULTTYPE"
